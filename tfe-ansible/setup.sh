@@ -2,26 +2,32 @@
 # setup.sh — TFE Ansible playbook setup script.
 # Usage: source setup.sh   (activates the venv in your current shell)
 #        bash setup.sh     (runs in a subshell; venv won't persist)
-#
-# ┌─────────────────────────────────────────────────────────────────┐
-# │                    CONFIGURATION — edit here                    │
-# ├─────────────────────────────────────────────────────────────────┤
-# │                                                                 │
-TFE_HOSTNAME=""            # e.g. tfe.example.com  (used in tfe.env and TLS cert)
-TFE_HOST_IP=""             # e.g. 192.168.1.100     (used for SSH/inventory and TLS cert SAN)
-TFE_LICENSE=""             # Terraform Enterprise license string
-TFE_ENCRYPTION_PASSWORD="" # use this comamnd to create one -> openssl rand -base64 32
-#                                                                   │
-# Initial TFE admin account                                         │
-TFE_ADMIN_USERNAME=""      # e.g. admin
-TFE_ADMIN_EMAIL=""         # e.g. admin@example.com
-TFE_ADMIN_PASSWORD=""      # e.g. MySecureP123!
-#                                                                   │
-# SSH credentials used by Ansible to connect to the target host    │
-ANSIBLE_USER=""            # SSH username on the target host
-ANSIBLE_PASSWORD=""        # SSH password for the above user
-# │                                                                 │
-# └─────────────────────────────────────────────────────────────────┘
+
+# Detect whether the script was sourced or executed.
+# Works in both bash (BASH_SOURCE) and zsh (ZSH_EVAL_CONTEXT).
+_is_sourced=false
+if [ -n "${ZSH_EVAL_CONTEXT:-}" ]; then
+    [[ "$ZSH_EVAL_CONTEXT" == *:file* ]] && _is_sourced=true
+elif [ -n "${BASH_SOURCE:-}" ]; then
+    [[ "${BASH_SOURCE[0]}" != "${0}" ]] && _is_sourced=true
+fi
+
+if $_is_sourced; then
+    _script_path="${BASH_SOURCE[0]:-$0}"
+    # Run the setup in a subshell to protect the parent shell from exit/options pollution.
+    if ORIGINAL_INVOCATION_SOURCED=true bash "$_script_path"; then
+        # Setup succeeded — activate the venv in the parent shell.
+        _script_dir="$(cd "$(dirname "$_script_path")" && pwd)"
+        if [ -f "${_script_dir}/.ansible-env/bin/activate" ]; then
+            source "${_script_dir}/.ansible-env/bin/activate"
+        fi
+        unset _is_sourced _script_path _script_dir
+        return 0
+    else
+        unset _is_sourced _script_path
+        return 1
+    fi
+fi
 
 set -eo pipefail
 # Note: -u (nounset) is intentionally omitted — zsh passes unset variables
@@ -43,17 +49,26 @@ header() { echo -e "\n${BOLD}── $* ─────────────�
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# ── load configuration ────────────────────────────────────────────────────────
+if [[ -f "setup.env" ]]; then
+    # shellcheck source=/dev/null
+    source "setup.env"
+else
+    error "setup.env not found. Please create setup.env and configure your variables."
+fi
+
 # ── validate configuration ────────────────────────────────────────────────────
 header "Validating configuration"
 
-[[ -z "$TFE_HOSTNAME"       ]] && error "TFE_HOSTNAME is not set. Edit the configuration block at the top of setup.sh."
-[[ -z "$TFE_HOST_IP"        ]] && error "TFE_HOST_IP is not set. Edit the configuration block at the top of setup.sh."
-[[ -z "$TFE_LICENSE"        ]] && error "TFE_LICENSE is not set. Edit the configuration block at the top of setup.sh."
-[[ -z "$TFE_ADMIN_USERNAME" ]] && error "TFE_ADMIN_USERNAME is not set. Edit the configuration block at the top of setup.sh."
-[[ -z "$TFE_ADMIN_EMAIL"    ]] && error "TFE_ADMIN_EMAIL is not set. Edit the configuration block at the top of setup.sh."
-[[ -z "$TFE_ADMIN_PASSWORD" ]] && error "TFE_ADMIN_PASSWORD is not set. Edit the configuration block at the top of setup.sh."
-[[ -z "$ANSIBLE_USER"       ]] && error "ANSIBLE_USER is not set. Edit the configuration block at the top of setup.sh."
-[[ -z "$ANSIBLE_PASSWORD"   ]] && error "ANSIBLE_PASSWORD is not set. Edit the configuration block at the top of setup.sh."
+[[ -z "$TFE_HOSTNAME"           ]] && error "TFE_HOSTNAME is not set in setup.env."
+[[ -z "$TFE_HOST_IP"            ]] && error "TFE_HOST_IP is not set in setup.env."
+[[ -z "$TFE_LICENSE"            ]] && error "TFE_LICENSE is not set in setup.env."
+[[ -z "$TFE_ENCRYPTION_PASSWORD" ]] && error "TFE_ENCRYPTION_PASSWORD is not set in setup.env."
+[[ -z "$TFE_ADMIN_USERNAME"     ]] && error "TFE_ADMIN_USERNAME is not set in setup.env."
+[[ -z "$TFE_ADMIN_EMAIL"        ]] && error "TFE_ADMIN_EMAIL is not set in setup.env."
+[[ -z "$TFE_ADMIN_PASSWORD"     ]] && error "TFE_ADMIN_PASSWORD is not set in setup.env."
+[[ -z "$ANSIBLE_USER"           ]] && error "ANSIBLE_USER is not set in setup.env."
+[[ -z "$ANSIBLE_PASSWORD"       ]] && error "ANSIBLE_PASSWORD is not set in setup.env."
 
 info "All required values are present."
 
@@ -67,13 +82,6 @@ command -v sed     >/dev/null 2>&1 || error "sed is required but not found."
 info "python3 : $(python3 --version)"
 info "openssl : $(openssl version)"
 
-# ── auto-generate encryption password if not provided ────────────────────────
-if [[ -z "$TFE_ENCRYPTION_PASSWORD" ]]; then
-    TFE_ENCRYPTION_PASSWORD="$(openssl rand -base64 32)"
-    warn "TFE_ENCRYPTION_PASSWORD was empty — a random password has been generated."
-    warn "Save it somewhere safe: ${TFE_ENCRYPTION_PASSWORD}"
-fi
-
 # ── portable in-place sed (GNU and BSD/macOS) ─────────────────────────────────
 sedi() {
     if sed --version 2>/dev/null | grep -q GNU; then
@@ -86,17 +94,35 @@ sedi() {
 # ── Step 1: create tfe.env ────────────────────────────────────────────────────
 header "Step 1 — Creating tfe.env"
 
-cp tfe-example.env tfe.env
-
-sedi "s|<host-host-name>|${TFE_HOSTNAME}|g"                 tfe.env
-sedi "s|<host-ip-address>|${TFE_HOST_IP}|g"                 tfe.env
-sedi "s|<tfe-license>|${TFE_LICENSE}|g"                     tfe.env
-sedi "s|<tfe-encryption-pass>|${TFE_ENCRYPTION_PASSWORD}|g" tfe.env
-sedi "s|<initial-admin>|${TFE_ADMIN_USERNAME}|g"            tfe.env
-sedi "s|<initial-email>|${TFE_ADMIN_EMAIL}|g"               tfe.env
-sedi "s|<initial-pass>|${TFE_ADMIN_PASSWORD}|g"             tfe.env
-sedi "s|<host-user-name>|${ANSIBLE_USER}|g"                 tfe.env
-sedi "s|<host-paas>|${ANSIBLE_PASSWORD}|g"                  tfe.env
+TFE_HOSTNAME="${TFE_HOSTNAME}" \
+TFE_HOST_IP="${TFE_HOST_IP}" \
+TFE_LICENSE="${TFE_LICENSE}" \
+TFE_ENCRYPTION_PASSWORD="${TFE_ENCRYPTION_PASSWORD}" \
+TFE_ADMIN_USERNAME="${TFE_ADMIN_USERNAME}" \
+TFE_ADMIN_EMAIL="${TFE_ADMIN_EMAIL}" \
+TFE_ADMIN_PASSWORD="${TFE_ADMIN_PASSWORD}" \
+ANSIBLE_USER="${ANSIBLE_USER}" \
+ANSIBLE_PASSWORD="${ANSIBLE_PASSWORD}" \
+python3 -c '
+import os, shlex
+replacements = {
+    "<host-host-name>": os.environ.get("TFE_HOSTNAME", ""),
+    "<host-ip-address>": os.environ.get("TFE_HOST_IP", ""),
+    "<tfe-license>": os.environ.get("TFE_LICENSE", ""),
+    "<tfe-encryption-pass>": os.environ.get("TFE_ENCRYPTION_PASSWORD", ""),
+    "<initial-admin>": os.environ.get("TFE_ADMIN_USERNAME", ""),
+    "<initial-email>": os.environ.get("TFE_ADMIN_EMAIL", ""),
+    "<initial-pass>": os.environ.get("TFE_ADMIN_PASSWORD", ""),
+    "<host-user-name>": os.environ.get("ANSIBLE_USER", ""),
+    "<host-paas>": os.environ.get("ANSIBLE_PASSWORD", "")
+}
+with open("tfe-example.env", "r") as f:
+    content = f.read()
+for placeholder, val in replacements.items():
+    content = content.replace(placeholder, shlex.quote(val))
+with open("tfe.env", "w") as f:
+    f.write(content)
+'
 
 info "tfe.env written."
 
@@ -169,6 +195,7 @@ echo -e "  ${GREEN}✔${RESET}  host_vars/${TFE_HOST_IP}.yml ready"
 echo -e "  ${GREEN}✔${RESET}  TLS certificates in files/certs/"
 echo -e "  ${GREEN}✔${RESET}  Ansible virtual environment ready"
 echo
+
 # Detect whether the script was sourced or executed.
 # Works in both bash (BASH_SOURCE) and zsh (ZSH_EVAL_CONTEXT).
 _is_sourced=false
@@ -176,6 +203,10 @@ if [ -n "${ZSH_EVAL_CONTEXT:-}" ]; then
     [[ "$ZSH_EVAL_CONTEXT" == *:file* ]] && _is_sourced=true
 elif [ -n "${BASH_SOURCE:-}" ]; then
     [[ "${BASH_SOURCE[0]}" != "${0}" ]] && _is_sourced=true
+fi
+
+if [ "${ORIGINAL_INVOCATION_SOURCED:-false}" = "true" ]; then
+    _is_sourced=true
 fi
 
 if ! $_is_sourced; then

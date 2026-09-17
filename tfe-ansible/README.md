@@ -28,6 +28,9 @@ tfe-ansible/
 ├── install-tfe.yml           # Main installation playbook
 ├── create-tfe-initial-admin.yml  # Initial admin creation playbook
 ├── uninstall-tfe.yml         # Uninstallation playbook
+├── setup.sh                  # Automated setup script
+├── setup.env                 # Setup configuration and credentials (ignored by git)
+├── reset.sh                  # Reset script to revert setup changes
 └── tfe-example.env           # Environment variable template
 ```
 
@@ -49,21 +52,26 @@ git clone https://github.com/IBM/terraform-ibm-z-linuxone-samples.git
 cd terraform-ibm-z-linuxone-samples/tfe-ansible
 ```
 
-**3.** Open `setup.sh` and fill in the configuration block at the top of the file:
+**3.** Configure `setup.env` with your host details and credentials:
 
 ```bash
-TFE_HOSTNAME=""            # domain name of the host, e.g. tfe.example.com  (used in tfe.env and TLS cert)
-TFE_HOST_IP=""             # IP address of the host, e.g. 192.168.1.100     (used for SSH/inventory and TLS cert SAN)
-TFE_LICENSE=""             # Terraform Enterprise license string
-TFE_ENCRYPTION_PASSWORD=""
+# setup.env
+TFE_HOSTNAME="tfe.example.com"            # domain name of the host (used in tfe.env and TLS cert)
+TFE_HOST_IP="192.168.1.100"               # IP address of the host (used for SSH/inventory and TLS cert SAN)
+TFE_LICENSE="<your-tfe-license>"          # Terraform Enterprise license string
+TFE_ENCRYPTION_PASSWORD="<encryption-pass>" # Encryption password for TFE data at rest
 
-TFE_ADMIN_USERNAME=""      # e.g. admin
-TFE_ADMIN_EMAIL=""         # e.g. admin@example.com
-TFE_ADMIN_PASSWORD=""      # e.g. MySecurePassword123!
+# Initial TFE admin account
+TFE_ADMIN_USERNAME="admin"                # Initial admin username
+TFE_ADMIN_EMAIL="admin@example.com"       # Initial admin email
+TFE_ADMIN_PASSWORD="MySecurePassword123!" # Initial admin password
 
-ANSIBLE_USER=""            # SSH username on the target host
-ANSIBLE_PASSWORD=""        # SSH password for the above user
+# SSH credentials used by Ansible to connect to the target host
+ANSIBLE_USER="root"                       # SSH username on the target host
+ANSIBLE_PASSWORD="<ssh-password>"         # SSH password for the above user
 ```
+
+> `setup.env` is listed in `.gitignore` so your credentials remain secure and won't be committed to source control.
 
 **4.** Source the script:
 
@@ -76,7 +84,7 @@ source setup.sh
 > Running with `source setup.sh` (or `. setup.sh`) executes everything in your current shell, so the venv activation persists and `ansible` is available directly after the script completes.
 
 The script will automatically:
-- Validate that all required values are filled in
+- Load and validate that all required values are present in `setup.env`
 - Create and populate `tfe.env` from `tfe-example.env`
 - Update `inventory.ini` with `TFE_HOST_IP`
 - Rename `host_vars/<host-ip-address>.yml` to `host_vars/<TFE_HOST_IP>.yml`
@@ -241,8 +249,8 @@ Generate a self-signed certificate and private key for your TFE host. The certif
 
 ```bash
 openssl req -x509 -newkey rsa:4096 -sha256 -days 365 -nodes \
-  -keyout files/certs/tfe01/key.pem \
-  -out    files/certs/tfe01/cert.pem \
+  -keyout files/certs/key.pem \
+  -out    files/certs/cert.pem \
   -subj   "/CN=tfe.example.com" \
   -addext "subjectAltName=DNS:tfe.example.com,IP:192.168.1.100"
 ```
@@ -250,16 +258,16 @@ openssl req -x509 -newkey rsa:4096 -sha256 -days 365 -nodes \
 Since this is a self-signed certificate, copy the certificate itself as the CA bundle:
 
 ```bash
-cp files/certs/tfe01/cert.pem files/certs/tfe01/bundle.pem
+cp files/certs/cert.pem files/certs/bundle.pem
 ```
 
 The following files are now required by the playbook:
 
 | File | Description |
 |------|-------------|
-| `files/certs/tfe01/cert.pem` | TFE server certificate |
-| `files/certs/tfe01/key.pem` | TFE server private key |
-| `files/certs/tfe01/bundle.pem` | CA certificate bundle (copy of cert.pem for self-signed) |
+| `files/certs/cert.pem` | TFE server certificate |
+| `files/certs/key.pem` | TFE server private key |
+| `files/certs/bundle.pem` | CA certificate bundle (copy of cert.pem for self-signed) |
 
 ---
 
@@ -291,6 +299,16 @@ ansible-playbook -i inventory.ini uninstall-tfe.yml
 ```
 
 > Set `TFE_DELETE_DATA=true` in `tfe.env` to also remove all TFE data directories during uninstall.
+
+---
+
+## Resetting the Setup
+
+To revert the automated changes made by `setup.sh` (removes generated certificates, resets `inventory.ini` and `host_vars`, and deletes `tfe.env`):
+
+```bash
+bash reset.sh
+```
 
 ---
 

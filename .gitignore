@@ -1,3 +1,6 @@
 .DS_Store
 .ansible/.lock
 .vscode/settings.json
+tfe-ansible/tfe.env
+tfe-ansible/files/certs/
+tfe-ansible/setup.env
