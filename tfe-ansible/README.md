@@ -55,6 +55,10 @@ cd terraform-ibm-z-linuxone-samples/tfe-ansible
 **3.** Configure `setup.env` with your host details and credentials:
 
 ```bash
+touch setup.env
+```
+
+```bash
 # setup.env
 TFE_HOSTNAME="tfe.example.com"            # domain name of the host (used in tfe.env and TLS cert)
 TFE_HOST_IP="192.168.1.100"               # IP address of the host (used for SSH/inventory and TLS cert SAN)
